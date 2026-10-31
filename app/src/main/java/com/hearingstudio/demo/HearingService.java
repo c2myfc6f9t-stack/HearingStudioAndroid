@@ -129,7 +129,10 @@ public final class HearingService extends Service {
         capture=false;
         AudioRecord recorder=currentRecorder;
         if(recorder!=null)try{recorder.stop();}catch(Exception ignored){}
-        status="Остановлено";
+        // Preserve audio-routing errors so the user can report them.
+        if(!status.startsWith("Ошибка")&&!status.startsWith("Нет доступа")&&
+           !status.startsWith("Запуск службы"))
+            status="Остановлено";
     }
     @Override public void onDestroy(){
         stopCapture();
