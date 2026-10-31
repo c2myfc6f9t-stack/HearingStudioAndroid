@@ -23,6 +23,11 @@ jobs:
           echo "ANDROID_HOME=$ANDROID_HOME"
           ls "$ANDROID_HOME/platforms"
           ls "$ANDROID_HOME/build-tools"
+      - name: Validate DSP
+        run: |
+          mkdir -p .dsp-test
+          javac -d .dsp-test app/src/main/java/com/hearingstudio/demo/SceneProcessor.java tools/SceneProcessorSmokeTest.java
+          java -cp .dsp-test com.hearingstudio.demo.SceneProcessorSmokeTest
       - name: Build debug APK
         run: gradle --no-daemon :app:assembleDebug
       - name: Upload APK
