@@ -31,7 +31,7 @@ public final class SceneProcessor {
     private final double sampleRate;
     private Settings active;
     private final PeakFilter speech1, speech2;
-    private double hpX, hpY, compressionEnvelope;
+    private double hpX, hpY, compressionEnvelope, highPassAlpha;
 
     public SceneProcessor(int sampleRate) {
         if (sampleRate <= 0) throw new IllegalArgumentException("invalid rate");
@@ -47,6 +47,7 @@ public final class SceneProcessor {
     public void setSettings(Settings settings) {
         if (settings == null || settings == active) return;
         active = settings;
+        highPassAlpha = Math.exp(-2.0 * Math.PI * (35 + settings.rumble * 1.15) / sampleRate);
         speech1.updateDb(settings.speech * 0.043); // <= +4.3 dB
         speech2.updateDb(settings.speech * 0.035); // <= +3.5 dB
     }
@@ -55,9 +56,7 @@ public final class SceneProcessor {
     public double process(double sample) {
         final Settings config = active;
         // A tunable rumble / wind / traffic low-cut: 35 to 150 Hz.
-        final double cutoffHz = 35 + config.rumble * 1.15;
-        final double a = Math.exp(-2.0 * Math.PI * cutoffHz / sampleRate);
-        final double hp = a * (hpY + sample - hpX);
+        final double hp = highPassAlpha * (hpY + sample - hpX);
         hpX = sample;
         hpY = hp;
 
