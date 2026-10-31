@@ -36,6 +36,18 @@ public final class MainActivity extends Activity {
     private static final int[] FREQS = {250,500,1000,2000,4000};
     private final int[][] gains = new int[2][5];
     private final float[] levels = {0.25f,0.25f};
+    // noise, speech EQ, wind/rumble cut, dynamic compression.
+    private final int[] sceneControls = {45,65,35,50};
+    private final SeekBar[] sceneBars = new SeekBar[4];
+    private final TextView[] sceneLabels = new TextView[4];
+    private Spinner scenePicker;
+    private volatile SceneProcessor.Settings sceneSettings = new SceneProcessor.Settings(45,65,35,50);
+    private static final int[][] PRESETS = {
+        {45,65,35,50}, // Conversation
+        {60,60,75,45}, // Transport
+        {25,40,80,30}, // Street
+        {0,0,20,0}     // Neutral
+    };
     private volatile Bank bank = new Bank(gains);
     private volatile boolean running = false;
     private volatile int inputMode = 0; // 0: phone microphone + media output, 1: Bluetooth headset hands-free
@@ -80,6 +92,28 @@ public final class MainActivity extends Activity {
         startButton=button(buttons,"ЗАПУСТИТЬ",v->start());
         stopButton=button(buttons,"СТОП",v->stop());
         stopButton.setEnabled(false);
+        gap(root,16);
+        text(root,"Улучшение звуковой сцены",20,true,0xff183047);
+        text(root,"Фильтрация работает на телефоне для обоих источников. Это не ИИ-разделение голосов: постоянные шумы приглушаются адаптивно, а речевые частоты подчёркиваются эквалайзером.",13,false,0xff526273);
+        scenePicker=new Spinner(this);
+        ArrayAdapter<String> modes=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,
+            new String[]{"Разговор", "Транспорт", "Улица", "Нейтральный", "Моя настройка"});
+        scenePicker.setAdapter(modes);
+        root.addView(scenePicker);
+        sceneSlider(root,0,"Подавление фонового шума");
+        sceneSlider(root,1,"Разборчивость речи");
+        sceneSlider(root,2,"Убрать ветер и низкий гул");
+        sceneSlider(root,3,"Стабилизация громкости");
+        scenePicker.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View v,int position,long id){
+                if(position>=0 && position<PRESETS.length){
+                    for(int i=0;i<4;i++)sceneBars[i].setProgress(PRESETS[position][i]);
+                    updateScene();
+                }
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent){}
+        });
+        text(root,"Сильное шумоподавление может приглушать тихую речь и важные звуки. Начни с профиля «Разговор». Задержка Bluetooth этим не устраняется.",13,false,0xff9b3a2f);
         gap(root,14);
         text(root,"Индивидуальная громкость",19,true,0xff183047);
         volume(root,0,"Левое ухо");
@@ -97,11 +131,13 @@ public final class MainActivity extends Activity {
             stop();
             for(int e=0;e<2;e++) for(int b=0;b<5;b++) gains[e][b]=0;
             levels[0]=levels[1]=0.25f;
+            for(int i=0;i<4;i++)sceneControls[i]=PRESETS[0][i];
+            updateScene();
             bank=new Bank(gains);
             recreate();
         });
         gap(root,12);
-        text(root,"Обрабатывается только звук микрофона смартфона. Встроенный режим прозрачности AirPods не изменяется. Данные не покидают устройство.",13,false,0xff526273);
+        text(root,"Обрабатывается выбранный микрофон: телефона или гарнитуры. Встроенный режим прозрачности AirPods не изменяется. Звук не сохраняется и никуда не отправляется.",13,false,0xff526273);
     }
     private int px(int v){return Math.round(v*getResources().getDisplayMetrics().density);}
     private TextView text(LinearLayout root,String s,int size,boolean bold,int color){
@@ -116,6 +152,30 @@ public final class MainActivity extends Activity {
         if(root.getOrientation()==LinearLayout.HORIZONTAL)root.addView(b,new LinearLayout.LayoutParams(0,px(56),1f));
         else root.addView(b,new LinearLayout.LayoutParams(-1,px(56)));
         b.setOnClickListener(click);return b;
+    }
+    private void updateScene(){
+        sceneSettings=new SceneProcessor.Settings(sceneControls[0],sceneControls[1],
+            sceneControls[2],sceneControls[3]);
+    }
+    private void sceneSlider(LinearLayout root,int index,String name) {
+        TextView label=text(root,name+" — "+sceneControls[index]+"%",15,false,0xff183047);
+        sceneLabels[index]=label;
+        SeekBar bar=new SeekBar(this);
+        sceneBars[index]=bar;
+        bar.setMax(100);
+        bar.setProgress(sceneControls[index]);
+        root.addView(bar);
+        bar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener(){
+            @Override public void onProgressChanged(SeekBar sb,int p,boolean fromUser){
+                sceneControls[index]=p;
+                label.setText(name+" — "+p+"%");
+                updateScene();
+                if(fromUser && scenePicker!=null && scenePicker.getSelectedItemPosition()!=4)
+                    scenePicker.setSelection(4);
+            }
+            @Override public void onStartTrackingTouch(SeekBar sb){}
+            @Override public void onStopTrackingTouch(SeekBar sb){}
+        });
     }
     private void volume(LinearLayout root,int ear,String name){
         TextView label=text(root,name+" 25%",15,false,0xff183047);
@@ -172,6 +232,7 @@ public final class MainActivity extends Activity {
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         AudioRecord rec=null; AudioTrack out=null;
         boolean bluetooth=inputMode==1;
+        SceneProcessor processor=new SceneProcessor(RATE);
         try{
             if(bluetooth){
                 if(Build.VERSION.SDK_INT<31)throw new IllegalStateException("Нужен Android 12+ для выбора микрофона AirPods.");
@@ -218,20 +279,19 @@ public final class MainActivity extends Activity {
             String outName=routedOutput==null?"маршрут не определён":routedOutput.getProductName().toString();
             status("Вход: "+inName+" | Выход: "+outName+(bluetooth?" (гарнитура, моно)":""));
             short[] input=new short[FRAME], output=new short[FRAME*outChannels];
-            float oldx=0,oldy=0;
             while(running){
                 int n=rec.read(input,0,FRAME);
                 if(n<0)throw new IllegalStateException("Ошибка микрофона: "+n);
                 if(n==0)continue;
                 Bank f=bank;
+                processor.setSettings(sceneSettings);
                 float vl=levels[0],vr=levels[1];
                 for(int i=0;i<n;i++){
-                    float x=input[i]/32768f;
-                    float hp=0.99f*(oldy+x-oldx);oldx=x;oldy=hp;
-                    if(bluetooth)output[i]=pcm((f.apply(0,hp)*vl+f.apply(1,hp)*vr)*0.5);
+                    double processed=processor.process(input[i]/32768.0);
+                    if(bluetooth)output[i]=pcm((f.apply(0,processed)*vl+f.apply(1,processed)*vr)*0.5);
                     else {
-                        output[i*2]=pcm(f.apply(0,hp)*vl);
-                        output[i*2+1]=pcm(f.apply(1,hp)*vr);
+                        output[i*2]=pcm(f.apply(0,processed)*vl);
+                        output[i*2+1]=pcm(f.apply(1,processed)*vr);
                     }
                 }
                 int pos=0;
