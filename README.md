@@ -1,29 +1,27 @@
-# Hearing Studio 0.4 — Android experiment
+# Hearing Studio 0.5 — Android background audio
 
-Test app developed for **POCO C71 + AirPods Pro 3**.
+Experimental sound enhancement app for **POCO C71 / AirPods Pro 3**.
 
-## What is implemented
+## What works
+- Local microphone monitoring: phone microphone or Bluetooth hands-free mic (if offered by Android).
+- Scene filters: four-band adaptive attenuation, speech-band emphasis, low-frequency high-pass and light compression.
+- Presets Conversation, Transport, Street, Neutral, Custom.
+- Stereo left/right level and 5-band EQ; Bluetooth communication output may be mono.
+- **Foreground service of type microphone**, started only by the user while the app screen is visible.
+- Runs when the UI is minimized or screen turned off, with an ongoing Android notification and **Stop** action.
+- Retains settings across UI restarts using private SharedPreferences.
+- No recordings, network access or upload. Does not automatically restart mic after app process is killed.
 
-- Phone microphone or Bluetooth hands-free microphone, subject to Android device routing.
-- Real-time 4-band adaptive noise attenuation based on signal energy and estimated background level.
-- Speech-band emphasis with two peaking filters, wind/rumble high-pass, and mild peak compression.
-- Scene presets: Conversation, Transport, Street, Neutral, Custom.
-- Independently adjustable left/right levels and 5-band EQ in stereo media mode.
-- Controls run entirely offline. Audio is never saved or uploaded.
-- CPU-friendly 5-ms processing frames. Actual end-to-end latency is dominated by Android/Bluetooth and is not measured or guaranteed.
+## Important
+- **Not a medical hearing aid.** No calibrated output or validated audiogram fitting.
+- No access to AirPods transparency, no separate source recognition or noise classification.
+- Bluetooth input/output may add substantial latency and reduce sound quality.
+- Start with very low volume. Noise filtering may suppress speech and warning sounds.
+- The phone may shut down the service due to battery optimization. If it stops in the background, try Settings > Apps > Hearing Studio > Battery > Unrestricted (labels vary).
+- Active mic is indicated by Android. The app must be in the foreground to start capture; you cannot covertly enable mic in the background.
+- Android 13+ notification permission is requested; Android may show foreground service operation in the task manager even when notification permission is declined.
 
-## Important limitations
-
-- **Not a medical hearing aid.** No clinically validated audiogram fitting or calibrated sound pressure.
-- No AI voice identification, no isolation of your own voice vs another speaker, no access to the AirPods transparency DSP.
-- In Bluetooth headset mode Android may switch to mono, reduced-bandwidth hands-free audio: then independent left/right processing is not guaranteed.
-- The noise gate **can also suppress quiet speech or alerts** and may create audible pumping. Use carefully.
-- Start at low system volume. Stop if you hear feedback or discomfort. Do not use this app in traffic or for safety-critical hearing.
-- Each CI build uses an ephemeral debug signing key; uninstall older versions if Android refuses to update.
-
-## Build / validation
-
-GitHub Actions runs a JVM DSP smoke test and standard Android Gradle Plugin assembleDebug.
-Download artifact `hearing-studio-debug-apk` from the latest successful run in Actions, unpack, install `app-debug.apk`.
-
-To install on POCO C71, allow installation from the browser or Files app when prompted.
+## Build
+GitHub Actions: JVM DSP checks + Android Gradle Plugin debug APK.
+Download artifact from the latest successful workflow run and extract `app-debug.apk`.
+CI debug APK signatures may differ across runs: if update installation fails, uninstall the previous build before installing 0.5.
