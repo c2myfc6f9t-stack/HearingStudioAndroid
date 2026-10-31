@@ -12,9 +12,14 @@ import android.media.AudioRecord;
 import android.media.AudioTrack;
 import android.media.MediaRecorder;
 import android.os.Bundle;
+import android.os.Build;
+import android.media.AudioAttributes;
 import android.os.Process;
 import android.view.View;
 import android.widget.Button;
+import android.widget.ArrayAdapter;
+import android.widget.Spinner;
+import android.widget.AdapterView;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
@@ -27,18 +32,21 @@ import android.widget.TextView;
 public final class MainActivity extends Activity {
     private static final int PERMISSION_MIC = 42;
     private static final int RATE = 48000;
-    private static final int FRAME = 1024;
+    private static final int FRAME = 240; // 5 ms PCM frames at 48 kHz
     private static final int[] FREQS = {250,500,1000,2000,4000};
     private final int[][] gains = new int[2][5];
     private final float[] levels = {0.25f,0.25f};
     private volatile Bank bank = new Bank(gains);
     private volatile boolean running = false;
+    private volatile int inputMode = 0; // 0: phone microphone + media output, 1: Bluetooth headset hands-free
     private Thread thread;
     private TextView status;
+    private AudioManager audioManager;
     private Button startButton, stopButton;
 
     @Override public void onCreate(Bundle state) {
         super.onCreate(state);
+        audioManager=(AudioManager)getSystemService(Context.AUDIO_SERVICE);
         ScrollView scroll = new ScrollView(this);
         scroll.setBackgroundColor(Color.rgb(247,248,252));
         LinearLayout root = new LinearLayout(this);
@@ -49,8 +57,21 @@ public final class MainActivity extends Activity {
         text(root,"HEARING STUDIO",25,true,0xff183047);
         text(root,"Тестовая версия для POCO C71 • Android",14,false,0xff526273);
         gap(root,16);
-        text(root,"Микрофон телефона → AirPods (если выбраны для звука)",15,true,0xff244f73);
-        text(root,"Не является слуховым аппаратом. Возможны задержка и акустическая обратная связь. Перед запуском уменьшите громкость в телефоне. Не используйте при движении по дороге.",14,false,0xff9b3a2f);
+        text(root,"Выбор источника звука",18,true,0xff244f73);
+        Spinner chooser=new Spinner(this);
+        ArrayAdapter<String> choices=new ArrayAdapter<>(this,android.R.layout.simple_spinner_dropdown_item,
+            new String[]{"Микрофон телефона → AirPods (медиа)","Микрофон AirPods / Bluetooth (гарнитура)"});
+        chooser.setAdapter(choices);
+        chooser.setOnItemSelectedListener(new AdapterView.OnItemSelectedListener(){
+            @Override public void onItemSelected(AdapterView<?> parent,View v,int position,long id){
+                if(running)stop();
+                inputMode=position;
+            }
+            @Override public void onNothingSelected(AdapterView<?> parent){}
+        });
+        root.addView(chooser);
+        text(root,"В режиме AirPods Android переключает Bluetooth на разговорный профиль: звук может быть моно, более низкого качества. Если микрофон не доступен системе, приложение сообщит об этом.",13,false,0xff526273);
+        text(root,"Экспериментальная программа, не слуховой аппарат. Bluetooth может давать заметную задержку и акустическую обратную связь. Начните с низкой системной громкости. Не используйте для безопасности или на дороге.",14,false,0xff9b3a2f);
         gap(root,12);
         status=text(root,"Остановлено",16,true,0xff264d6d);
         LinearLayout buttons=new LinearLayout(this);
@@ -65,7 +86,7 @@ public final class MainActivity extends Activity {
         volume(root,1,"Правое ухо");
         gap(root,10);
         text(root,"Эквалайзер: −6 … +6 дБ",19,true,0xff183047);
-        text(root,"Это ручная коррекция, не настройка по аудиограмме. Оба канала получают один и тот же сигнал с микрофона телефона.",13,false,0xff526273);
+        text(root,"Ручная коррекция, не аудиограмма. В режиме Bluetooth-гарнитуры Android может передавать моно; тогда независимая коррекция ушей не поддерживается.",13,false,0xff526273);
         for(int ear=0;ear<2;ear++) {
             gap(root,8);
             text(root,ear==0?"ЛЕВОЕ УХО":"ПРАВОЕ УХО",16,true,0xff244f73);
@@ -124,6 +145,10 @@ public final class MainActivity extends Activity {
         if(checkSelfPermission(Manifest.permission.RECORD_AUDIO)!=PackageManager.PERMISSION_GRANTED){
             requestPermissions(new String[]{Manifest.permission.RECORD_AUDIO},PERMISSION_MIC);return;
         }
+        if(inputMode==1 && Build.VERSION.SDK_INT>=31 &&
+                checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)!=PackageManager.PERMISSION_GRANTED){
+            requestPermissions(new String[]{Manifest.permission.BLUETOOTH_CONNECT},PERMISSION_MIC);return;
+        }
         running=true;startButton.setEnabled(false);stopButton.setEnabled(true);
         status.setText("Подключение аудио...");
         thread=new Thread(this::loop,"phone-mic-monitor");thread.start();
@@ -146,21 +171,53 @@ public final class MainActivity extends Activity {
     private void loop(){
         Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO);
         AudioRecord rec=null; AudioTrack out=null;
+        boolean bluetooth=inputMode==1;
         try{
+            if(bluetooth){
+                if(Build.VERSION.SDK_INT<31)throw new IllegalStateException("Нужен Android 12+ для выбора микрофона AirPods.");
+                audioManager.setMode(AudioManager.MODE_IN_COMMUNICATION);
+                AudioDeviceInfo selected=null;
+                for(AudioDeviceInfo device:audioManager.getAvailableCommunicationDevices()){
+                    int t=device.getType();
+                    if(t==AudioDeviceInfo.TYPE_BLUETOOTH_SCO||t==AudioDeviceInfo.TYPE_BLE_HEADSET){
+                        selected=device;
+                        break;
+                    }
+                }
+                if(selected==null)throw new IllegalStateException("Android не показывает Bluetooth-микрофон. Переподключите AirPods.");
+                if(!audioManager.setCommunicationDevice(selected))
+                    throw new IllegalStateException("Android отказал в переключении Bluetooth-гарнитуры.");
+                Thread.sleep(650); // permit hands-free route to initialize, not a playback buffer
+            }
+
+            int outChannels=bluetooth?1:2;
+            int outputMask=bluetooth?AudioFormat.CHANNEL_OUT_MONO:AudioFormat.CHANNEL_OUT_STEREO;
             int rmin=AudioRecord.getMinBufferSize(RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT);
-            int pmin=AudioTrack.getMinBufferSize(RATE,AudioFormat.CHANNEL_OUT_STEREO,AudioFormat.ENCODING_PCM_16BIT);
+            int pmin=AudioTrack.getMinBufferSize(RATE,outputMask,AudioFormat.ENCODING_PCM_16BIT);
             if(rmin<=0||pmin<=0)throw new IllegalStateException("PCM 48 кГц недоступен");
-            rec=new AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION,RATE,AudioFormat.CHANNEL_IN_MONO,
-                AudioFormat.ENCODING_PCM_16BIT,Math.max(rmin,FRAME*4));
-            out=new AudioTrack(AudioManager.STREAM_MUSIC,RATE,AudioFormat.CHANNEL_OUT_STEREO,
-                AudioFormat.ENCODING_PCM_16BIT,Math.max(pmin,FRAME*8),AudioTrack.MODE_STREAM);
+            rec=new AudioRecord(bluetooth?MediaRecorder.AudioSource.VOICE_COMMUNICATION:MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                RATE,AudioFormat.CHANNEL_IN_MONO,AudioFormat.ENCODING_PCM_16BIT,Math.max(rmin,FRAME*4));
+            AudioFormat format=new AudioFormat.Builder().setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                .setSampleRate(RATE).setChannelMask(outputMask).build();
+            AudioAttributes attributes=new AudioAttributes.Builder()
+                .setUsage(bluetooth?AudioAttributes.USAGE_VOICE_COMMUNICATION:AudioAttributes.USAGE_MEDIA)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH).build();
+            out=new AudioTrack.Builder().setAudioAttributes(attributes).setAudioFormat(format)
+                .setTransferMode(AudioTrack.MODE_STREAM).setBufferSizeInBytes(Math.max(pmin,FRAME*outChannels*4))
+                .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY).build();
             if(rec.getState()!=AudioRecord.STATE_INITIALIZED||out.getState()!=AudioTrack.STATE_INITIALIZED)
                 throw new IllegalStateException("Не удалось открыть аудио");
-            AudioManager manager=(AudioManager)getSystemService(Context.AUDIO_SERVICE);
-            for(AudioDeviceInfo d:manager.getDevices(AudioManager.GET_DEVICES_INPUTS))
-                if(d.getType()==AudioDeviceInfo.TYPE_BUILTIN_MIC){rec.setPreferredDevice(d);break;}
-            rec.startRecording();out.play();status("Работает. Громкость регулируется в телефоне.");
-            short[] input=new short[FRAME], output=new short[FRAME*2];
+            if(!bluetooth){
+                for(AudioDeviceInfo d:audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS))
+                    if(d.getType()==AudioDeviceInfo.TYPE_BUILTIN_MIC){rec.setPreferredDevice(d);break;}
+            }
+            rec.startRecording();out.play();
+            AudioDeviceInfo routedInput=rec.getRoutedDevice();
+            AudioDeviceInfo routedOutput=out.getRoutedDevice();
+            String inName=routedInput==null?"маршрут не определён":routedInput.getProductName().toString();
+            String outName=routedOutput==null?"маршрут не определён":routedOutput.getProductName().toString();
+            status("Вход: "+inName+" | Выход: "+outName+(bluetooth?" (гарнитура, моно)":""));
+            short[] input=new short[FRAME], output=new short[FRAME*outChannels];
             float oldx=0,oldy=0;
             while(running){
                 int n=rec.read(input,0,FRAME);
@@ -171,12 +228,15 @@ public final class MainActivity extends Activity {
                 for(int i=0;i<n;i++){
                     float x=input[i]/32768f;
                     float hp=0.99f*(oldy+x-oldx);oldx=x;oldy=hp;
-                    output[i*2]=pcm(f.apply(0,hp)*vl);
-                    output[i*2+1]=pcm(f.apply(1,hp)*vr);
+                    if(bluetooth)output[i]=pcm((f.apply(0,hp)*vl+f.apply(1,hp)*vr)*0.5);
+                    else {
+                        output[i*2]=pcm(f.apply(0,hp)*vl);
+                        output[i*2+1]=pcm(f.apply(1,hp)*vr);
+                    }
                 }
                 int pos=0;
-                while(running&&pos<n*2){
-                    int w=out.write(output,pos,n*2-pos);
+                while(running&&pos<n*outChannels){
+                    int w=out.write(output,pos,n*outChannels-pos);
                     if(w<0)throw new IllegalStateException("Ошибка воспроизведения: "+w);
                     if(w==0)break;
                     pos+=w;
@@ -185,6 +245,10 @@ public final class MainActivity extends Activity {
         }catch(Exception ex){status("Ошибка: "+ex.getMessage());}
         finally{
             running=false;
+            if(bluetooth && Build.VERSION.SDK_INT>=31){
+                audioManager.clearCommunicationDevice();
+                audioManager.setMode(AudioManager.MODE_NORMAL);
+            }
             if(rec!=null){try{rec.stop();}catch(Exception ignored){}rec.release();}
             if(out!=null){try{out.stop();}catch(Exception ignored){}out.release();}
             runOnUiThread(()->{startButton.setEnabled(true);stopButton.setEnabled(false);});
