@@ -315,7 +315,11 @@ public final class MainActivity extends Activity {
         }
     }
     private short pcm(double x){
-        return (short)Math.round(Math.max(-0.5,Math.min(0.5,x))*32767.0);
+        if(!Double.isFinite(x))return 0;
+        double magnitude=Math.abs(x);
+        // Unity below -7.5 dBFS, then smooth limiting to avoid hard-clipped peaks.
+        if(magnitude>0.42)magnitude=0.42+0.08*(1.0-Math.exp(-(magnitude-0.42)/0.08));
+        return (short)Math.round(Math.copySign(Math.min(0.5,magnitude),x)*32767.0);
     }
     private static final class Bank{
         final Biquad[][] eq=new Biquad[2][5];
