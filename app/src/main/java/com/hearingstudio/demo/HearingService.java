@@ -20,6 +20,7 @@ import android.media.MediaRecorder;
 import android.os.Build;
 import android.os.IBinder;
 import android.os.Process;
+import android.os.PowerManager;
 
 import java.util.Arrays;
 
@@ -44,6 +45,7 @@ public final class HearingService extends Service {
     private Thread audioThread;
     private volatile AudioRecord currentRecorder;
     private AudioManager manager;
+    private PowerManager.WakeLock wakeLock;
 
     public static final class Profile {
         public final int inputMode;
@@ -149,6 +151,9 @@ public final class HearingService extends Service {
         Profile previousProfile=null;
         Biquad[][] filters=new Biquad[2][5];
         try {
+            PowerManager power=(PowerManager)getSystemService(Context.POWER_SERVICE);
+            wakeLock=power.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK,"hearingstudio:audio");
+            wakeLock.acquire(); // released in finally; allows audio when screen is off
             if(bluetooth) {
                 if(Build.VERSION.SDK_INT<31)
                     throw new IllegalStateException("Android 12+ нужен для Bluetooth микрофона");
@@ -257,6 +262,8 @@ public final class HearingService extends Service {
                 try{manager.clearCommunicationDevice();}catch(Exception ignored){}
                 manager.setMode(AudioManager.MODE_NORMAL);
             }
+            if(wakeLock!=null && wakeLock.isHeld())wakeLock.release();
+            wakeLock=null;
             active=false;
             if("Подключение звука…".equals(status) || status.startsWith("Вход:"))
                 status="Остановлено";
